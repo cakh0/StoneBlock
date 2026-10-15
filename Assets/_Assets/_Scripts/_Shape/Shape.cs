@@ -1,151 +1,128 @@
-using UnityEngine;
 using System.Collections.Generic;
+using UnityEngine;
 using UnityEngine.EventSystems;
 
-public class Shape : MonoBehaviour, IPointerClickHandler, IPointerUpHandler, IBeginDragHandler, IDragHandler, IEndDragHandler, IPointerDownHandler
+public class Shape : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
 {
-    //1. Shape properties
-    public  GameObject squareShapeImage;
-    [HideInInspector] 
-    public ShapeData currentShapeData;
-    private List<GameObject> currentShapeSquares = new List<GameObject>();
-
+    public GameObject squareShapeImage;
+    [HideInInspector] public ShapeData currentShapeData;
     public Vector3 shapeSelectedScale;
-
-    //2. Initialize the shape with the provided ShapeData
-    private int GetNumberOfSquares(ShapeData shapeData)
+    [Tooltip("Gap above the pointer/finger, measured in board cells.")]
+    [Range(0f, 3f)] public float dragFingerGap = 1.1f;
+    private readonly List<GameObject> squares = new List<GameObject>();
+    private readonly List<Vector2Int> coordinates = new List<Vector2Int>();
+    public IReadOnlyList<Vector2Int> Coordinates => coordinates;
+    public bool HasShape => coordinates.Count > 0;
+    public Vector3 FirstSquarePosition => squares[0].transform.position;
+    public Sprite BlockSprite => BlockVisual.Sprite;
+    public Color BlockColor { get; private set; } = Color.white;
+    public bool IsDragging => dragging;
+    public float TrayCellSize { get; set; } = 38;
+    private Grid grid;
+    private ShapeStorage storage;
+    private Vector3 homePosition, homeScale;
+    private int siblingIndex;
+    private bool dragging;
+    private Vector2 pointerOffset;
+    private Transform homeParent;
+    private void Awake()
     {
-        int count = 0;
-        foreach (var row in shapeData.board)
-        {
-            foreach (var active in row.column)
-            {
-                if (active)
-                {
-                    count++;
-                }
-            }
-        }
-        return count;
+        grid = FindFirstObjectByType<Grid>();
+        storage = FindFirstObjectByType<ShapeStorage>();
     }
-    //3. Create the shape squares based on the ShapeData
-     public float GetXPositionForShapeSquare(ShapeData shapeData, int column, Vector2 moveDistance)
+    public float GetXPositionForShapeSquare(ShapeData data, int col, Vector2 step) => (col - (data.columns - 1) / 2f) * step.x;
+    private float GetYPositionForShapeSquare(ShapeData data, int row, Vector2 step) => ((data.rows - 1) / 2f - row) * step.y;
+    public void CreateShape(ShapeData data)
     {
-        // Tính vị trí X dựa trên column index
-        // Column 0 ở bên trái, column tăng dần sang phải
-        // Trung tâm shape nằm ở giữa
-
-        int totalColumns = shapeData.columns;
-
-        // Tính offset từ trung tâm
-        // Với số lẻ: trung tâm là (totalColumns - 1) / 2
-        // Với số chẵn: trung tâm nằm giữa 2 ô
-
-        float centerColumn = (totalColumns - 1) / 2f;
-        float offsetFromCenter = column - centerColumn; // Dương = sang phải, Âm = sang trái
-
-        return offsetFromCenter * moveDistance.x;
+        currentShapeData = data;
+        Color[] colors = { new Color(0.22f,0.62f,1), new Color(1,0.58f,0.22f), new Color(0.64f,0.4f,1), new Color(0.2f,0.8f,0.65f), new Color(1,0.38f,0.5f) };
+        BlockColor = colors[Random.Range(0, colors.Length)];
+        coordinates.Clear();
+        if (data && data.board != null)
+            for (int r = 0; r < data.rows; r++)
+            for (int c = 0; c < data.columns; c++)
+                if (data.board[r].column[c]) coordinates.Add(new Vector2Int(c, r));
+        while (squares.Count < coordinates.Count) squares.Add(Instantiate(squareShapeImage, transform, false));
+        for (int i = 0; i < squares.Count; i++) squares[i].SetActive(i < coordinates.Count);
+        LayoutSquares(false);
     }
-
-    //4. Calculate the Y position for a shape square based on its row index and the move distance
-    private float GetYPositionForShapeSquare(ShapeData shapeData, int row, Vector2 moveDistance)
+    public void RequestNewShape(ShapeData data) => CreateShape(data);
+    private void LayoutSquares(bool onBoard)
     {
-        // Tính vị trí Y dựa trên row index
-        // Row 0 ở trên cùng, row tăng dần đi xuống
-        // Trung tâm shape nằm ở giữa
-
-        int totalRows = shapeData.rows;
-
-        // Tính offset từ trung tâm
-        // Với số lẻ: trung tâm là (totalRows - 1) / 2
-        // Với số chẵn: trung tâm nằm giữa 2 ô
-
-        float centerRow = (totalRows - 1) / 2f;
-        float offsetFromCenter = centerRow - row; // Dương = lên trên, Âm = xuống dưới
-
-        return offsetFromCenter * moveDistance.y;      
-    }
-
-    //5. Create the shape based on the provided ShapeData, activating and positioning the squares accordingly
-    public void CreateShape(ShapeData shapeData)
-    {
-        currentShapeData = shapeData;
-        var totalSquares = GetNumberOfSquares(shapeData);
-        while (currentShapeSquares.Count <= totalSquares)
+        if (!HasShape) return;
+        var rect = squareShapeImage.GetComponent<RectTransform>();
+        Vector2 step = Vector2.one * TrayCellSize;
+        Vector3 scale = new Vector3(TrayCellSize * 0.9f / rect.rect.width, TrayCellSize * 0.9f / rect.rect.height, 1);
+        if (onBoard && grid)
         {
-            var newSquare = Instantiate(squareShapeImage, transform);
-            currentShapeSquares.Add(newSquare);
+            Vector3 localStep = transform.InverseTransformVector(grid.transform.TransformVector(new Vector3(grid.CellStep, grid.CellStep, 0)));
+            step = new Vector2(localStep.x, localStep.y);
+            Vector2 boardSize = grid.gridSquarePrefab.GetComponent<GridSquare>().normalImage.rectTransform.rect.size * grid.squaresScale;
+            Vector3 localSize = transform.InverseTransformVector(grid.transform.TransformVector(boardSize));
+            scale = new Vector3(localSize.x / rect.rect.width, localSize.y / rect.rect.height, 1);
         }
-        foreach (var square in currentShapeSquares)
+        for (int i = 0; i < coordinates.Count; i++)
         {
-            square.gameObject.transform.position = Vector3.zero;
-            square.gameObject.SetActive(false);
-        }
-        var squareRect = squareShapeImage.GetComponent<RectTransform>();
-        var moveDistance = new Vector2(squareRect.rect.width * squareRect.localScale.x, squareRect.rect.height * squareRect.localScale.y);
-
-        int currentSquareIndex = 0;
-        for (int row = 0; row < shapeData.rows; row++)
-        {
-            for (int col = 0; col < shapeData.columns; col++)
-            {
-                if (shapeData.board[row].column[col])
-                {
-                    var square = currentShapeSquares[currentSquareIndex];
-                    square.gameObject.SetActive(true);
-                    square.gameObject.GetComponent<RectTransform>().localPosition = new Vector2(GetXPositionForShapeSquare(shapeData, col, moveDistance), GetYPositionForShapeSquare(shapeData, row, moveDistance));
-                    currentSquareIndex++;
-                }
-            }
+            var p = coordinates[i];
+            squares[i].transform.localScale = scale;
+            var displayColor = BlockColor;
+            if (onBoard) displayColor.a = 0.72f;
+            squares[i].GetComponent<UnityEngine.UI.Image>().color = displayColor;
+            squares[i].GetComponent<UnityEngine.UI.Image>().sprite = BlockSprite;
+            squares[i].transform.localPosition = new Vector3(GetXPositionForShapeSquare(currentShapeData, p.x, step), GetYPositionForShapeSquare(currentShapeData, p.y, step), 0);
         }
     }
-
-    //6. Request a new shape to be created based on the provided ShapeData
-    public void RequestNewShape(ShapeData shapeData)
+    public void OnBeginDrag(PointerEventData data)
     {
-        CreateShape(shapeData);
+        if (!HasShape || !grid || grid.IsGameOver) return;
+        if (!RectTransformUtility.ScreenPointToLocalPointInRectangle((RectTransform)transform.parent, data.position, data.pressEventCamera, out var pointer)) return;
+        homePosition = transform.localPosition;
+        homeScale = transform.localScale;
+        siblingIndex = transform.GetSiblingIndex();
+        homeParent = transform.parent;
+        dragging = true;
+        if (shapeSelectedScale.x > 0 && shapeSelectedScale.y > 0) transform.localScale = shapeSelectedScale;
+        var canvas = GetComponentInParent<Canvas>();
+        if (canvas) transform.SetParent(canvas.rootCanvas.transform, true);
+        RectTransformUtility.ScreenPointToLocalPointInRectangle((RectTransform)transform.parent, data.position, data.pressEventCamera, out pointer);
+        pointerOffset = (Vector2)transform.localPosition - pointer;
+        // Put the entire shape above the finger, including tall blocks.
+        Vector3 boardStep = transform.parent.InverseTransformVector(
+            grid.transform.TransformVector(Vector3.up * grid.CellStep));
+        pointerOffset.y = Mathf.Abs(boardStep.y) * (currentShapeData.rows * 0.5f + dragFingerGap);
+        transform.SetAsLastSibling();
+        LayoutSquares(true);
+        OnDrag(data);
     }
-
-
-    void Start()
+    public void OnDrag(PointerEventData data)
     {
-        // //7. If currentShapeData is not null, request a new shape to be created at the start
-        if (currentShapeData != null)
-        {
-             RequestNewShape(currentShapeData);
-        }
+        if (!dragging) return;
+        if (RectTransformUtility.ScreenPointToLocalPointInRectangle((RectTransform)transform.parent, data.position, data.pressEventCamera, out var p))
+            transform.localPosition = new Vector3(p.x + pointerOffset.x, p.y + pointerOffset.y, homePosition.z);
+        grid.ShowPreview(this);
     }
-    //8. Update is called once per frame
-    public void OnPointerClick(PointerEventData eventData)
+    public void OnEndDrag(PointerEventData data)
     {
-        // Handle pointer click event
+        if (!dragging) return;
+        OnDrag(data);
+        bool placed = grid.TryPlace(this);
+        ReturnHome();
+        if (!placed) return;
+        foreach (var square in squares) square.SetActive(false);
+        coordinates.Clear();
+        currentShapeData = null;
+        if (storage) storage.OnShapePlaced();
     }
-
-    public void OnPointerUp(PointerEventData eventData)
+    private void ReturnHome()
     {
-        // Handle pointer up event
+        dragging = false;
+        if (grid) grid.ClearPreview();
+        transform.SetParent(homeParent, false);
+        transform.localPosition = homePosition;
+        transform.localScale = homeScale;
+        transform.SetSiblingIndex(siblingIndex);
+        LayoutSquares(false);
     }
-
-    public void OnBeginDrag(PointerEventData eventData)
-    {
-        // Handle begin drag event
-    }
-
-    public void OnDrag(PointerEventData eventData)
-    {
-        // Handle drag event
-    }
-
-    public void OnEndDrag(PointerEventData eventData)
-    {
-        // Handle end drag event
-    }
-
-    public void OnPointerDown(PointerEventData eventData)
-    {
-        // Handle pointer down event
-    }
-
-    
-   
+    private void OnDisable() { if (dragging) ReturnHome(); }
+    public void RefreshTrayLayout() { if (!dragging) LayoutSquares(false); }
 }
